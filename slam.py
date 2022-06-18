@@ -1,71 +1,136 @@
+from multiprocessing.connection import wait
 import cv2
 from cv2 import imshow
 import os
+from cv2 import waitKey
 import numpy as np
 import matplotlib.pyplot as plot
 
-def save_all_frames(video_path, dir_path, basename, ext='jpg'):
-    cap = cv2.VideoCapture(video_path)
+window_name = 'frame'
+delay = 1
+lk_params = dict(
+    winSize=(21, 21),           # 検索ウィンドウのサイズ
+    maxLevel=3,                 # 追加するピラミッド層数
 
-    if not cap.isOpened():
-        return
+    # 検索を終了する条件
+    criteria=(
+        cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT,
+        30,
+        0.01
+    ),
 
-    os.makedirs(dir_path, exist_ok=True)
-    base_path = os.path.join(dir_path, basename)
+    # 推測値や固有値の使用
+    flags=cv2.OPTFLOW_LK_GET_MIN_EIGENVALS,
+)
 
-    digit = len(str(int(cap.get(cv2.CAP_PROP_FRAME_COUNT))))
+def extractFeatures(img):
+  orb = cv2.ORB_create()
+  # detection
+  pts = cv2.goodFeaturesToTrack(np.mean(img, axis=2).astype(np.uint8), 3000, qualityLevel=0.01, minDistance=7)
 
-    n = 0
+  # extraction
+  kps = [cv2.KeyPoint(x=f[0][0], y=f[0][1], size=20) for f in pts]
+  kps, des = orb.compute(img, kps)
 
-    while True:
-        ret, frame = cap.read()
-        if ret:
-            cv2.imwrite('{}_{}.{}'.format(base_path, str(n).zfill(digit), ext), frame)
-            n += 1
-        else:
-            return
+  # return pts and des
+  return np.array([(kp.pt[0], kp.pt[1]) for kp in kps]), des
 
-def get_r_t(F, K, first_image_path, second_image_path):
+def process_frame(frame):
+    img_gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    kps = cv2.goodFeaturesToTrack(img_gray, 3000, 0.01, 7)
+    return kps 
 
-    img1 = cv2.imread(first_image_path, cv2.IMREAD_COLOR)
+def match_features(prev_corners, corners):
+    bf = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=True)
+    matches = bf.match(prev_corners, corners)
+    return matches
 
-    img2 = cv2.imread(second_image_path, cv2.IMREAD_COLOR)
+def estimate_pos():
+    print("estimating pos")
 
-    lk_params = dict( winSize  = (100,100),
-         maxLevel = 2,
-        criteria = (cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 30, 0.01))
+def filter_points(prev, new):
+    indexs = []
 
-    next_features, st, error = cv2.calcOpticalFlowPyrLK(img1, img2, first_features, None , **lk_params)
-
-    good_old = np.int0(first_features[st==1])
-    good_new = np.int0(next_features[st==1])
-
-    em, mask = cv2.findEssentialMat(good_new, good_old, 
-                                    threshold=0.05, 
-                                    prob=0.95, 
-                                    focal=F, 
-                                    pp=(K[0, 2], K[1, 2]))
-
-    _, R, t, mask2 = cv2.recoverPose(em, good_new, good_old,focal=F, pp=(K[0, 2], K[1, 2]))
-
-    return R, t
+    for p in prev: 
+        print(p)
 
 
-def print_camera_parameter(video_path):
-            # camera parameters
-    cap = cv2.VideoCapture(video_path)
+if __name__=="__main__":
+    cap = cv2.VideoCapture("videos/test_countryroad.mp4")
 
     W = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     H = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
 
-    CNT = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    F = 525
 
-    print("W: {0}, H: {1}, CNT: {2}".format(W, H, CNT))
+    camera_matrix = np.array([[F,0,W//2],[0,F,H//2],[0,0,1]])
 
-if __name__=="__main__":
-    
-    img = cv2.imread("frames/slam_000.jpg", cv2.IMREAD_COLOR)
-    print(img.channels())
-    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    features = cv2.goodFeaturesToTrack(gray, maxCorners=3000, qualityLevel=0.01, minDistance=7)
+    prev_corners = None
+    prev_img = None
+    result_img = None 
+    gray_img = None
+
+    R_f = np.eye(3)
+    t_f = np.zeros((3,1))
+
+    xs = []
+    ys = []
+
+    while True:
+        if cap.isOpened(): 
+            ret, frame = cap.read()
+
+            if ret:
+                if prev_img is not None:
+                    prev_corners = process_frame(prev_img)
+
+                    gray_prev_img = cv2.cvtColor(prev_img, cv2.COLOR_BGR2GRAY)
+
+                    gray_img = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+
+                    next_corners, status, error = cv2.calcOpticalFlowPyrLK(gray_prev_img,gray_img, prev_corners, None, **lk_params)
+
+                    good_old = prev_corners[status == 1]
+                    good_new = next_corners[status == 1]
+                    result_img = prev_img.copy()
+
+                    essential_mat, _ = cv2.findEssentialMat(good_old, good_new, camera_matrix,cv2.RANSAC)
+
+                    points, R, t, mask = cv2.recoverPose(essential_mat, good_old, good_new)
+
+                    # print(essential_mat)
+
+                    # print("R", R.shape)
+
+                    # print("t", t.shape)
+
+                    t_f = t_f + R_f.dot(t) 
+                    R_f = R.dot(R_f)
+
+                    # print(t_f)
+                    # print(R_f)
+
+                    xs.append(t_f[0])
+                    ys.append(t_f[2])
+
+                    for p, next_p in zip(good_old, good_new):
+                        prev_x, prev_y = p.ravel()
+                        cur_x, cur_y = next_p.ravel()
+
+                        cv2.circle(result_img, (int(prev_x), int(prev_y)), 3, (0, 255 ,0))
+                        cv2.line(result_img, (int(prev_x), int(prev_y)), (int(cur_x), int(cur_y)), (255, 0, 0), 1)
+
+                prev_img = frame 
+
+                if result_img is not None:
+                    cv2.imshow(window_name, result_img)
+
+                    if waitKey(0) == ord("q"):
+                        break
+
+    plot.plot(xs, ys)
+    plot.show()
+
+
+                    
 
