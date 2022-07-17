@@ -5,6 +5,8 @@ import os
 from cv2 import waitKey
 import numpy as np
 import matplotlib.pyplot as plot
+from match_frame import getRT
+from skimage.measure import ransac
 
 window_name = 'frame'
 delay = 1
@@ -56,14 +58,20 @@ def filter_points(prev, new):
 
 
 if __name__=="__main__":
-    cap = cv2.VideoCapture("videos/test_countryroad.mp4")
+    cap = cv2.VideoCapture("videos/test_nyc.mp4")
 
     W = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     H = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
 
-    F = 525
+    # F = 525
 
-    camera_matrix = np.array([[F,0,W//2],[0,F,H//2],[0,0,1]])
+    # if W > 1024:
+    #     downscale = 1024.0/W
+    #     F *= downscale
+    #     H = int(H * downscale)
+    #     W = 1024
+
+    # camera_matrix = np.array([[F,0,W//2],[0,F,H//2],[0,0,1]])
 
     prev_corners = None
     prev_img = None
@@ -80,23 +88,25 @@ if __name__=="__main__":
         if cap.isOpened(): 
             ret, frame = cap.read()
 
+            frame = cv2.resize(frame, (W, H))
+
             if ret:
                 if prev_img is not None:
-                    prev_corners = process_frame(prev_img)
+                    # prev_corners = process_frame(prev_img)
 
-                    gray_prev_img = cv2.cvtColor(prev_img, cv2.COLOR_BGR2GRAY)
+                    # gray_prev_img = cv2.cvtColor(prev_img, cv2.COLOR_BGR2GRAY)
 
-                    gray_img = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+                    # gray_img = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
 
-                    next_corners, status, error = cv2.calcOpticalFlowPyrLK(gray_prev_img,gray_img, prev_corners, None, **lk_params)
+                    # next_corners, status, error = cv2.calcOpticalFlowPyrLK(gray_prev_img,gray_img, prev_corners, None, **lk_params)
 
-                    good_old = prev_corners[status == 1]
-                    good_new = next_corners[status == 1]
-                    result_img = prev_img.copy()
+                    # good_old = prev_corners[status == 1]
+                    # good_new = next_corners[status == 1]
+                    result_img = frame.copy()
 
-                    essential_mat, _ = cv2.findEssentialMat(good_old, good_new, camera_matrix,cv2.RANSAC)
+                    # essential_mat, _ = cv2.findEssentialMat(good_old, good_new, camera_matrix,cv2.RANSAC)
 
-                    points, R, t, mask = cv2.recoverPose(essential_mat, good_old, good_new)
+                    # points, R, t, mask = cv2.recoverPose(essential_mat, good_old, good_new)
 
                     # print(essential_mat)
 
@@ -104,21 +114,28 @@ if __name__=="__main__":
 
                     # print("t", t.shape)
 
+                    idx1, idx2, Rt = getRT(prev_img, frame)
+
+                    R,t = Rt[:3, :3], Rt[:3, 3]
+
+                    print(Rt)
+
                     t_f = t_f + R_f.dot(t) 
                     R_f = R.dot(R_f)
 
-                    # print(t_f)
-                    # print(R_f)
+                    # # print(t_f)
+                    # # print(R_f)
 
                     xs.append(t_f[0])
-                    ys.append(t_f[2])
+                    ys.append(t_f[1])
+                    # zs.append(t_f[2])
 
-                    for p, next_p in zip(good_old, good_new):
-                        prev_x, prev_y = p.ravel()
-                        cur_x, cur_y = next_p.ravel()
+                    # print(t_f[0], t_f[2])
 
-                        cv2.circle(result_img, (int(prev_x), int(prev_y)), 3, (0, 255 ,0))
-                        cv2.line(result_img, (int(prev_x), int(prev_y)), (int(cur_x), int(cur_y)), (255, 0, 0), 1)
+                    for p, next_p in zip(idx1, idx2):
+                        cv2.circle(result_img, (int(p[0]), int(p[1])), 3, (0, 255 ,0))
+                        cv2.circle(result_img, (int(next_p[0]), int(next_p[1])), 3, (0, 0, 255))
+                        cv2.line(result_img, (int(p[0]), int(p[1])), (int(next_p[0]), int(next_p[1])), (255, 0, 0), 1)
 
                 prev_img = frame 
 
@@ -128,7 +145,7 @@ if __name__=="__main__":
                     if waitKey(0) == ord("q"):
                         break
 
-    plot.plot(xs, ys)
+    plot.plot(xs, ys, color="red", marker="o")
     plot.show()
 
 
